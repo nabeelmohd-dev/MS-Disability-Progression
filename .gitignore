@@ -1,0 +1,26 @@
+# Data Privacy & Security (CRITICAL)
+# Ignore all raw clinical data files to prevent exposing sensitive datasets
+data/raw/*
+!data/raw/.gitkeep
+
+# Ignore intermediate processed data if it contains identifiable records
+data/processed/*
+!data/processed/.gitkeep
+
+# R / RStudio Workspace & Cache Artifacts
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.RData
+*.Rds
+*_cache/
+*_files/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Output / Rendered Artifacts (Optional: un-comment if you only want source code on Git)
+# outputs/
