@@ -1,0 +1,2413 @@
+---
+title: "MS Disability Progression - Weeks 1-5"
+subtitle: "MSc Data Science | Student: 25044419"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 10,
+  fig.height = 6,
+  fig.align  = "center"
+)
+```
+
+---
+
+# Setup: Load Libraries
+
+```{r libraries}
+library(tidyverse)
+library(lubridate)
+library(naniar)
+library(skimr)
+library(knitr)
+library(kableExtra)
+library(ggpubr)
+library(scales)
+library(viridis)
+```
+
+---
+
+# Load the Data
+
+```{r load-data}
+patients   <- read_csv("patients.csv")
+visits     <- read_csv("visits.csv")
+relapses   <- read_csv("relapses.csv")
+treatments <- read_csv("treatments.csv")
+
+cat("patients   :", nrow(patients),   "rows,", ncol(patients),   "columns\n")
+cat("visits     :", nrow(visits),     "rows,", ncol(visits),     "columns\n")
+cat("relapses   :", nrow(relapses),   "rows,", ncol(relapses),   "columns\n")
+cat("treatments :", nrow(treatments), "rows,", ncol(treatments), "columns\n")
+```
+
+---
+
+# patients.csv - one row per patient
+
+## Structure and column check
+
+```{r patients-structure}
+glimpse(patients)
+```
+
+## Select key columns
+
+```{r patients-key}
+patients_key <- patients %>%
+  select(
+    PATIENT_ID,
+    GENDER,
+    BIRTH_DATE,
+    SYMPTOMS_DATE,
+    MS_DIAGNOSIS_DATE,
+    MSCOURSE_1,
+    MSCOURSE_1_DATE,
+    MSCOURSE_2,
+    MSCOURSE_2_DATE,
+    DEAD
+  )
+
+patients_key %>%
+  head(10) %>%
+  kable(caption = "patients.csv - first 10 rows (key columns only)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+## Convert dates
+
+```{r patients-dates}
+# dates are DD.MM.YYYY, use dmy() not as_date()
+patients_key <- patients_key %>%
+  mutate(
+    BIRTH_DATE        = dmy(BIRTH_DATE),
+    SYMPTOMS_DATE     = dmy(SYMPTOMS_DATE),
+    MS_DIAGNOSIS_DATE = dmy(MS_DIAGNOSIS_DATE),
+    MSCOURSE_1_DATE   = dmy(MSCOURSE_1_DATE),
+    MSCOURSE_2_DATE   = dmy(MSCOURSE_2_DATE)
+  )
+
+cat("Birth dates:     ", format(range(patients_key$BIRTH_DATE,        na.rm = TRUE)), "\n")
+cat("Symptom onset:   ", format(range(patients_key$SYMPTOMS_DATE,     na.rm = TRUE)), "\n")
+cat("Diagnosis dates: ", format(range(patients_key$MS_DIAGNOSIS_DATE, na.rm = TRUE)), "\n")
+```
+
+## Derive age at onset and diagnostic delay
+
+```{r patients-age}
+patients_key <- patients_key %>%
+  mutate(
+    age_at_onset = as.numeric(
+      difftime(SYMPTOMS_DATE, BIRTH_DATE, units = "days")
+    ) / 365.25,
+
+    diagnostic_delay_yrs = as.numeric(
+      difftime(MS_DIAGNOSIS_DATE, SYMPTOMS_DATE, units = "days")
+    ) / 365.25,
+
+    # negative delays = data entry errors
+    diagnostic_delay_yrs = if_else(diagnostic_delay_yrs < 0, NA_real_, diagnostic_delay_yrs)
+  )
+
+cat("Age at onset - summary:\n")
+summary(patients_key$age_at_onset)
+cat("\nDiagnostic delay (years) - summary:\n")
+summary(patients_key$diagnostic_delay_yrs)
+```
+
+## Gender distribution
+
+```{r patients-gender}
+patients_key %>%
+  count(GENDER) %>%
+  mutate(pct = n / sum(n)) %>%
+  kable(col.names = c("Gender", "N", "Proportion"),
+        digits    = 3,
+        caption   = "Gender distribution") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Disease course at onset
+
+```{r patients-course}
+patients_key %>%
+  count(MSCOURSE_1, sort = TRUE) %>%
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) %>%
+  kable(col.names = c("MS Course", "N", "Percent"),
+        caption   = "Initial disease course (MSCOURSE_1)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Censoring status
+
+```{r patients-dead}
+patients_key %>%
+  count(DEAD) %>%
+  mutate(
+    label = ifelse(DEAD == 1 | DEAD == TRUE, "Deceased", "Alive/Censored"),
+    pct   = percent(n / sum(n), accuracy = 0.1)
+  ) %>%
+  kable(col.names = c("DEAD", "N", "Label", "Percent"),
+        caption   = "Censoring status") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Patient-level plots
+
+```{r patients-plots, fig.height=8}
+p1 <- ggplot(patients_key, aes(x = age_at_onset)) +
+  geom_histogram(bins = 30, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  labs(title = "Age at Symptom Onset", x = "Age (years)", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+
+p2 <- ggplot(patients_key %>% filter(!is.na(GENDER)),
+             aes(x = GENDER, fill = GENDER)) +
+  geom_bar(colour = "white", alpha = 0.85) +
+  scale_fill_manual(values = c("#2E4D7B", "#C85250", "#5A8A5A")) +
+  labs(title = "Gender Distribution", x = "", y = "Number of patients") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+
+p3 <- ggplot(patients_key %>% filter(!is.na(MSCOURSE_1)),
+             aes(x = fct_infreq(MSCOURSE_1), fill = MSCOURSE_1)) +
+  geom_bar(colour = "white", alpha = 0.85) +
+  scale_fill_viridis_d() +
+  labs(title = "Initial Disease Course", x = "", y = "Number of patients") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, hjust = 1))
+
+p4 <- ggplot(patients_key %>% filter(!is.na(diagnostic_delay_yrs),
+                                      diagnostic_delay_yrs >= 0,
+                                      diagnostic_delay_yrs < 30),
+             aes(x = diagnostic_delay_yrs)) +
+  geom_histogram(bins = 25, fill = "#5A8A5A", colour = "white", alpha = 0.85) +
+  labs(title = "Diagnostic Delay (Symptom Onset to Diagnosis)",
+       x = "Years", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+
+ggarrange(p1, p2, p3, p4, ncol = 2, nrow = 2)
+```
+
+---
+
+# File 2: visits.csv - One Row Per Clinical Visit
+
+## Basic structure
+
+```{r visits-structure}
+cat("Dimensions:", nrow(visits), "rows x", ncol(visits), "columns\n")
+cat("Columns:\n")
+cat(names(visits), sep = "\n")
+```
+
+## Select key columns
+
+```{r visits-key}
+visits_key <- visits %>%
+  select(
+    PATIENT_ID,
+    DATE_OF_VISIT,
+    EDSS,
+    DURATION_OF_MS_AT_VISIT,
+    DURATION_OF_MS_AT_VISIT_ROUNDED,
+    FIRST_MSCOURSE,
+    MSCOURSE_AT_VISIT
+  ) %>%
+  mutate(DATE_OF_VISIT = dmy(DATE_OF_VISIT))
+
+cat("Visits date range:              ", format(range(visits_key$DATE_OF_VISIT, na.rm = TRUE)), "\n")
+cat("Unique patients with visits:    ", n_distinct(visits_key$PATIENT_ID), "\n")
+cat("Total visits:                   ", nrow(visits_key), "\n")
+cat("Average visits per patient:     ", round(nrow(visits_key) / n_distinct(visits_key$PATIENT_ID), 1), "\n")
+```
+
+## Visits per patient
+
+```{r visits-per-patient}
+visits_per_patient <- visits_key %>%
+  count(PATIENT_ID, name = "n_visits")
+
+cat("Visits per patient - summary:\n")
+summary(visits_per_patient$n_visits)
+
+ggplot(visits_per_patient, aes(x = n_visits)) +
+  geom_histogram(bins = 30, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  geom_vline(aes(xintercept = median(n_visits)),
+             colour = "#C85250", linetype = "dashed", linewidth = 1) +
+  annotate("text",
+           x     = median(visits_per_patient$n_visits) + 1,
+           y     = Inf, vjust = 2,
+           label = paste("Median =", median(visits_per_patient$n_visits)),
+           colour = "#C85250", size = 4) +
+  labs(title = "Distribution of Number of Visits per Patient",
+       x = "Number of visits", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+```
+
+## Irregular visit spacing
+
+```{r visit-spacing}
+visit_gaps <- visits_key %>%
+  arrange(PATIENT_ID, DATE_OF_VISIT) %>%
+  group_by(PATIENT_ID) %>%
+  mutate(
+    prev_visit = lag(DATE_OF_VISIT),
+    gap_days   = as.numeric(DATE_OF_VISIT - prev_visit),
+    gap_months = gap_days / 30.44
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(gap_days))
+
+cat("Inter-visit gap (days) - summary:\n")
+summary(visit_gaps$gap_days)
+cat("\nInter-visit gap (months) - summary:\n")
+summary(visit_gaps$gap_months)
+
+ggplot(visit_gaps %>% filter(gap_days < 730), aes(x = gap_months)) +
+  geom_histogram(bins = 40, fill = "#5A8A5A", colour = "white", alpha = 0.85) +
+  geom_vline(xintercept = 6,  colour = "#C85250", linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = 12, colour = "#2E4D7B", linetype = "dashed", linewidth = 1) +
+  annotate("text", x = 6.5,  y = Inf, vjust = 2,
+           label = "6 months",  colour = "#C85250", size = 3.5) +
+  annotate("text", x = 12.5, y = Inf, vjust = 2,
+           label = "12 months", colour = "#2E4D7B", size = 3.5) +
+  labs(title    = "Distribution of Inter-Visit Gaps (months)",
+       subtitle = "Confirms irregular visit spacing - visits are NOT evenly scheduled",
+       x = "Gap between consecutive visits (months)", y = "Count") +
+  theme_minimal(base_size = 13)
+```
+
+## EDSS - primary outcome measure
+
+```{r edss-summary}
+cat("EDSS - summary:\n")
+summary(visits_key$EDSS)
+cat("EDSS missing:", sum(is.na(visits_key$EDSS)), "of", nrow(visits_key),
+    "(", round(100 * mean(is.na(visits_key$EDSS)), 1), "%)\n")
+
+# is missingness spread across patients or concentrated?
+visits_key %>%
+  mutate(edss_missing = is.na(EDSS)) %>%
+  group_by(PATIENT_ID) %>%
+  summarise(pct_missing = mean(edss_missing)) %>%
+  summary()
+
+visits_key %>%
+  filter(!is.na(EDSS)) %>%
+  ggplot(aes(x = EDSS)) +
+  geom_histogram(binwidth = 0.5, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  scale_x_continuous(breaks = seq(0, 10, by = 1)) +
+  labs(title    = "EDSS Distribution Across All Visits",
+       subtitle = paste0("n = ", sum(!is.na(visits_key$EDSS)), " visits with EDSS recorded",
+                         " | ", round(100 * mean(is.na(visits_key$EDSS)), 1), "% missing"),
+       x = "EDSS Score", y = "Number of visits") +
+  theme_minimal(base_size = 13) +
+  annotate("text", x = 8, y = Inf, vjust = 2,
+           label  = "Expected bimodal:\nclustering at low\nand moderate scores",
+           size   = 3.5, colour = "#C85250")
+```
+
+## EDSS over time
+
+```{r edss-over-time}
+edss_trajectory <- visits_key %>%
+  filter(!is.na(EDSS),
+         !is.na(DURATION_OF_MS_AT_VISIT_ROUNDED),
+         DURATION_OF_MS_AT_VISIT_ROUNDED <= 20) %>%
+  group_by(DURATION_OF_MS_AT_VISIT_ROUNDED) %>%
+  summarise(
+    median_edss = median(EDSS),
+    q25         = quantile(EDSS, 0.25),
+    q75         = quantile(EDSS, 0.75),
+    n_visits    = n()
+  )
+
+ggplot(edss_trajectory, aes(x = DURATION_OF_MS_AT_VISIT_ROUNDED)) +
+  geom_ribbon(aes(ymin = q25, ymax = q75), fill = "#2E4D7B", alpha = 0.2) +
+  geom_line(aes(y = median_edss), colour = "#2E4D7B", linewidth = 1.2) +
+  geom_point(aes(y = median_edss, size = n_visits), colour = "#2E4D7B") +
+  scale_size_continuous(range = c(2, 6), name = "N visits") +
+  scale_x_continuous(breaks = seq(0, 20, by = 2)) +
+  scale_y_continuous(breaks = seq(0, 10, by = 1), limits = c(0, 10)) +
+  labs(title    = "Median EDSS by Years Since Symptom Onset",
+       subtitle = "Shaded band = IQR (25th to 75th percentile)",
+       x = "Years since symptom onset", y = "EDSS") +
+  theme_minimal(base_size = 13)
+```
+
+## Missing data in visits.csv
+
+```{r visits-missing}
+missing_summary <- visits_key %>%
+  summarise(across(everything(), ~ mean(is.na(.)) * 100)) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "pct_missing") %>%
+  arrange(desc(pct_missing))
+
+missing_summary %>%
+  kable(col.names = c("Column", "% Missing"),
+        digits    = 1,
+        caption   = "Missing data by column in visits.csv (key columns)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(which(missing_summary$pct_missing > 30), background = "#FCE4D6")
+```
+
+## EDSS missingness over disease duration
+
+```{r edss-missing-over-time}
+edss_missing_time <- visits_key %>%
+  filter(!is.na(DURATION_OF_MS_AT_VISIT_ROUNDED),
+         DURATION_OF_MS_AT_VISIT_ROUNDED <= 20) %>%
+  group_by(DURATION_OF_MS_AT_VISIT_ROUNDED) %>%
+  summarise(
+    n_total     = n(),
+    n_missing   = sum(is.na(EDSS)),
+    pct_missing = 100 * n_missing / n_total
+  )
+print(edss_missing_time, n = 21)
+as.data.frame(edss_missing_time)
+
+ggplot(edss_missing_time,
+       aes(x = DURATION_OF_MS_AT_VISIT_ROUNDED, y = pct_missing)) +
+  geom_col(fill = "#C85250", colour = "white", alpha = 0.85) +
+  geom_hline(yintercept = 45, linetype = "dashed",
+             colour = "#2E4D7B", linewidth = 1) +
+  annotate("text", x = 15, y = 47,
+           label  = "Overall 45% missing",
+           colour = "#2E4D7B", size = 3.5) +
+  scale_x_continuous(breaks = seq(0, 20, by = 2)) +
+  labs(title    = "EDSS Missingness by Year of Disease Duration",
+       subtitle = "If missingness increases over time, this supports MNAR - sicker patients dropping out",
+       x = "Years since symptom onset", y = "% of visits missing EDSS") +
+  theme_minimal(base_size = 13)
+```
+
+---
+
+# File 3: relapses.csv - One Row Per Relapse Event
+
+## Basic structure
+
+```{r relapses-structure}
+glimpse(relapses)
+```
+
+## Counts and distribution
+
+```{r relapses-key}
+relapses_key <- relapses %>%
+  select(PATIENT_ID, DATE_OF_ONSET) %>%
+  mutate(DATE_OF_ONSET = dmy(DATE_OF_ONSET))
+
+relapses_per_patient <- relapses_key %>%
+  count(PATIENT_ID, name = "n_relapses")
+
+cat("Total relapses:                     ", nrow(relapses_key), "\n")
+cat("Patients with at least one relapse: ", n_distinct(relapses_key$PATIENT_ID), "\n")
+cat("Patients with NO recorded relapses: ",
+    n_distinct(patients$PATIENT_ID) - n_distinct(relapses_key$PATIENT_ID), "\n")
+cat("\nRelapses per patient - summary:\n")
+summary(relapses_per_patient$n_relapses)
+```
+
+## Relapse plots
+
+```{r relapses-plot}
+p1 <- ggplot(relapses_per_patient, aes(x = n_relapses)) +
+  geom_histogram(bins = 20, fill = "#C85250", colour = "white", alpha = 0.85) +
+  labs(title = "Relapses per Patient",
+       x = "Number of relapses", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+
+relapses_with_time <- relapses_key %>%
+  left_join(patients_key %>% select(PATIENT_ID, SYMPTOMS_DATE),
+            by = "PATIENT_ID") %>%
+  mutate(
+    time_since_onset_yrs = as.numeric(
+      difftime(DATE_OF_ONSET, SYMPTOMS_DATE, units = "days")
+    ) / 365.25
+  ) %>%
+  filter(!is.na(time_since_onset_yrs),
+         time_since_onset_yrs >= 0,
+         time_since_onset_yrs <= 20)
+
+p2 <- ggplot(relapses_with_time, aes(x = time_since_onset_yrs)) +
+  geom_histogram(bins = 30, fill = "#C85250", colour = "white", alpha = 0.85) +
+  labs(title = "Relapse Timing Since Symptom Onset",
+       x = "Years since onset", y = "Number of relapses") +
+  theme_minimal(base_size = 13)
+
+ggarrange(p1, p2, ncol = 2)
+```
+
+---
+
+# File 4: treatments.csv - One Row Per Treatment Episode
+
+## Basic structure
+
+```{r treatments-structure}
+glimpse(treatments)
+```
+
+## DMT types
+
+```{r treatments-dmt}
+treatments_key <- treatments %>%
+  select(PATIENT_ID, DMT, START_DATE, END_DATE) %>%
+  mutate(
+    START_DATE = dmy(START_DATE),
+    END_DATE   = dmy(END_DATE)
+  )
+
+treatments_key %>%
+  count(DMT, sort = TRUE) %>%
+  head(20) %>%
+  kable(col.names = c("DMT", "N episodes"),
+        caption   = "Top 20 most common DMTs") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Treatment episodes per patient
+
+```{r treatments-episodes}
+episodes_per_patient <- treatments_key %>%
+  count(PATIENT_ID, name = "n_episodes")
+
+cat("DMT episodes per patient - summary:\n")
+summary(episodes_per_patient$n_episodes)
+cat("\nPatients with no treatment recorded:",
+    n_distinct(patients$PATIENT_ID) - n_distinct(treatments_key$PATIENT_ID), "\n")
+```
+
+---
+
+# Follow-Up Analysis
+
+```{r followup}
+followup <- visits_key %>%
+  group_by(PATIENT_ID) %>%
+  summarise(
+    first_visit = min(DATE_OF_VISIT, na.rm = TRUE),
+    last_visit  = max(DATE_OF_VISIT, na.rm = TRUE),
+    n_visits    = n()
+  ) %>%
+  left_join(patients_key %>% select(PATIENT_ID, SYMPTOMS_DATE),
+            by = "PATIENT_ID") %>%
+  mutate(
+    followup_from_onset_yrs  = as.numeric(
+      difftime(last_visit, SYMPTOMS_DATE, units = "days")
+    ) / 365.25,
+    followup_in_registry_yrs = as.numeric(
+      difftime(last_visit, first_visit, units = "days")
+    ) / 365.25
+  )
+
+cat("Follow-up from onset to last visit (years):\n")
+summary(followup$followup_from_onset_yrs)
+
+cat("\nPatients with 2+ years of follow-up:", sum(followup$followup_from_onset_yrs >= 2, na.rm = TRUE), "\n")
+cat("Patients with 3+ years of follow-up:", sum(followup$followup_from_onset_yrs >= 3, na.rm = TRUE), "\n")
+cat("Patients with 5+ years of follow-up:", sum(followup$followup_from_onset_yrs >= 5, na.rm = TRUE), "\n")
+cat("Patients with 7+ years of follow-up:", sum(followup$followup_from_onset_yrs >= 7, na.rm = TRUE), "\n")
+cat("Patients with 20+ years of follow-up:", sum(followup$followup_from_onset_yrs >= 20, na.rm = TRUE), "\n")
+
+ggplot(followup %>% filter(!is.na(followup_from_onset_yrs)),
+       aes(x = followup_from_onset_yrs)) +
+  geom_histogram(bins = 30, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  geom_vline(xintercept = 2, colour = "#C85250", linetype = "dashed", linewidth = 1.2) +
+  geom_vline(xintercept = 5, colour = "#5A8A5A", linetype = "dashed", linewidth = 1.2) +
+  geom_vline(xintercept = 7, colour = "#E8A020", linetype = "dashed", linewidth = 1.2) +
+  annotate("text", x = 2.2, y = Inf, vjust = 1, label = "2 yrs", colour = "#C85250", size = 3.5) +
+  annotate("text", x = 5.2, y = Inf, vjust = 1, label = "5 yrs", colour = "#5A8A5A", size = 3.5) +
+  annotate("text", x = 7.2, y = Inf, vjust = 1, label = "7 yrs", colour = "#E8A020", size = 3.5) +
+  labs(title    = "Distribution of Patient Follow-Up Length (from symptom onset)",
+       subtitle = "Dashed lines show proposed feature and prediction windows",
+       x = "Years from symptom onset to last visit", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+```
+
+## Patients with EDSS data in year 0–2
+
+```{r edss-in-window}
+patients_with_early_edss <- visits_key %>%
+  filter(!is.na(EDSS),
+         DURATION_OF_MS_AT_VISIT >= 0,
+         DURATION_OF_MS_AT_VISIT <= 2) %>%
+  distinct(PATIENT_ID)
+
+cat("Patients with at least 1 EDSS in year 0-2:",
+    nrow(patients_with_early_edss), "of", n_distinct(visits_key$PATIENT_ID), "\n")
+
+patients_with_2_edss <- visits_key %>%
+  filter(!is.na(EDSS),
+         DURATION_OF_MS_AT_VISIT >= 0,
+         DURATION_OF_MS_AT_VISIT <= 2) %>%
+  count(PATIENT_ID) %>%
+  filter(n >= 2)
+
+cat("Patients with 2+ EDSS in year 0-2:", nrow(patients_with_2_edss), "\n")
+```
+
+---
+
+# Missing Data Overview - All Files
+
+```{r missing-overview, fig.height=10}
+analysis_vars <- visits_key %>%
+  left_join(patients_key %>% select(PATIENT_ID, GENDER, age_at_onset,
+                                     MSCOURSE_1, DEAD),
+            by = "PATIENT_ID")
+
+gg_miss_var(analysis_vars %>% select(-PATIENT_ID), show_pct = TRUE) +
+  labs(title    = "Missing Data - Combined Key Variables",
+       subtitle = "Percentage of values missing per variable") +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+# Summary - Key Findings (End of Week 1)
+
+```{r summary-table}
+summary_findings <- tibble(
+  Category = c(
+    "Total patients",
+    "Total clinical visits",
+    "Average visits per patient",
+    "Follow-up range (years from onset)",
+    "Patients with 2+ years follow-up",
+    "Patients with 5+ years follow-up",
+    "EDSS missing (all visits)",
+    "Patients with 2+ EDSS values in year 0-2",
+    "Total relapses recorded",
+    "Total DMT episodes recorded"
+  ),
+  Value = c(
+    n_distinct(patients$PATIENT_ID),
+    nrow(visits),
+    round(nrow(visits) / n_distinct(visits$PATIENT_ID), 1),
+    paste(round(min(followup$followup_from_onset_yrs, na.rm = TRUE), 1), "to",
+          round(max(followup$followup_from_onset_yrs, na.rm = TRUE), 1)),
+    sum(followup$followup_from_onset_yrs >= 2, na.rm = TRUE),
+    sum(followup$followup_from_onset_yrs >= 5, na.rm = TRUE),
+    paste0(round(100 * mean(is.na(visits$EDSS)), 1), "%"),
+    nrow(patients_with_2_edss),
+    nrow(relapses),
+    nrow(treatments)
+  )
+)
+
+summary_findings %>%
+  kable(caption = "Key Dataset Statistics - End of Week 1") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+---
+
+# Week 2 - Cleaning and Outcome Definition
+
+## DMT harmonisation
+
+```{r dmt-cleaning}
+# TREATMENT column has the drug name even where DMT is NA
+# VISIT_ID == "SYMPTOMATIC" = relapse/symptom treatment, not a DMT
+treatments_key <- treatments %>%
+  select(PATIENT_ID, DMT, TREATMENT, VISIT_ID, START_DATE, END_DATE) %>%
+  mutate(
+    START_DATE = dmy(START_DATE),
+    END_DATE   = dmy(END_DATE),
+
+    DMT_clean = case_when(
+      VISIT_ID == "SYMPTOMATIC"          ~ "Symptomatic",
+
+      # same drug, different dose - merge on name
+      str_detect(DMT, "OCREVUS")         ~ "OCREVUS",
+      str_detect(DMT, "TYSABRI")         ~ "TYSABRI",
+      str_detect(DMT, "GILENYA")         ~ "GILENYA",
+      str_detect(DMT, "TECFIDERA")       ~ "TECFIDERA",
+      str_detect(DMT, "COPAXONE")        ~ "COPAXONE",
+      str_detect(DMT, "AVONEX")          ~ "AVONEX",
+      str_detect(DMT, "BETAFERON")       ~ "BETAFERON",
+
+      # same drug, different name
+      # NATALIZUMAB = TYSABRI (checked EMA product page)
+      DMT == "NATALIZUMAB"               ~ "TYSABRI",
+
+      !is.na(DMT)                        ~ DMT,
+      TRUE                               ~ "Other"
+    )
+  )
+
+treatments_key %>%
+  count(DMT_clean, sort = TRUE) %>%
+  kable(col.names = c("DMT", "N episodes"),
+        caption   = "DMT episodes after harmonisation") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Course type grouping
+
+```{r course-grouping}
+# CIS = 307, PP = 33, NA = 60
+# No RR in this dataset, CIS is the pre-confirmation label (converts to RR)
+# PP = 33, above threshold of 10, kept separate
+# NA = 60 - relabelled as "MS" (diagnosed but no course recorded at onset)
+
+patients_key %>%
+  filter(is.na(MSCOURSE_1)) %>%
+  select(PATIENT_ID, MSCOURSE_1, MSCOURSE_2, MS_DIAGNOSIS_DATE) %>%
+  head(10) %>%
+  kable(caption = "Patients with no MS course recorded") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Feature window - compare 2 vs 3 year window
+
+```{r window-recheck}
+# widen to 0-3 years if 0-2 gives only 74 patients
+# prediction window shifts to years 4-6 accordingly
+patients_with_2_edss_3yr <- visits_key %>%
+  filter(!is.na(EDSS),
+         DURATION_OF_MS_AT_VISIT >= 0,
+         DURATION_OF_MS_AT_VISIT <= 3) %>%
+  count(PATIENT_ID) %>%
+  filter(n >= 2)
+
+cat("Eligible patients - 2yr window (Week 1 finding):", length(patients_with_2_edss$PATIENT_ID), "\n")
+cat("Eligible patients - 3yr window:                 ", nrow(patients_with_2_edss_3yr), "\n")
+cat("Gain from widening window:                      ",
+    nrow(patients_with_2_edss_3yr) - nrow(patients_with_2_edss), "patients\n")
+```
+
+## Baseline EDSS per patient
+
+```{r baseline-edss}
+# baseline = first EDSS value recorded from symptom onset
+# CDP threshold depends on baseline (Kappos et al. 2018, Neurology)
+baseline_edss <- visits_key %>%
+  filter(!is.na(EDSS), DURATION_OF_MS_AT_VISIT >= 0) %>%
+  arrange(PATIENT_ID, DATE_OF_VISIT) %>%
+  group_by(PATIENT_ID) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(PATIENT_ID, baseline_edss = EDSS) %>%
+  mutate(cdp_threshold = if_else(baseline_edss >= 5.5, 0.5, 1.0))
+
+cat("Baseline EDSS - summary:\n")
+summary(baseline_edss$baseline_edss)
+cat("\nPatients with threshold 0.5 (baseline >= 5.5):",
+    sum(baseline_edss$cdp_threshold == 0.5), "\n")
+cat("Patients with threshold 1.0 (baseline < 5.5): ",
+    sum(baseline_edss$cdp_threshold == 1.0), "\n")
+```
+
+## Define CDP outcome (years 4–6)
+
+```{r cdp-outcome}
+# step 1: visits in prediction window with EDSS
+prediction_visits <- visits_key %>%
+  filter(DURATION_OF_MS_AT_VISIT >= 4,
+         DURATION_OF_MS_AT_VISIT <= 6,
+         !is.na(EDSS)) %>%
+  left_join(baseline_edss, by = "PATIENT_ID") %>%
+  mutate(
+    edss_increase   = EDSS - baseline_edss,
+    meets_threshold = edss_increase >= cdp_threshold
+  )
+
+# step 2: unconfirmed CDP - at least one visit meets threshold
+cdp_unconfirmed <- prediction_visits %>%
+  group_by(PATIENT_ID) %>%
+  summarise(cdp = any(meets_threshold, na.rm = TRUE)) %>%
+  ungroup()
+
+cat("Patients with visits in prediction window: ", nrow(cdp_unconfirmed), "\n")
+cat("CDP events (unconfirmed):                  ", sum(cdp_unconfirmed$cdp), "\n")
+cat("CDP rate   (unconfirmed):                  ",
+    round(100 * mean(cdp_unconfirmed$cdp), 1), "%\n")
+
+# step 3: confirmed CDP - increase at two consecutive visits
+cdp_confirmed <- prediction_visits %>%
+  arrange(PATIENT_ID, DATE_OF_VISIT) %>%
+  group_by(PATIENT_ID) %>%
+  mutate(confirmed = meets_threshold & lag(meets_threshold, default = FALSE)) %>%
+  summarise(cdp = any(confirmed, na.rm = TRUE)) %>%
+  ungroup()
+
+cat("\nCDP events (confirmed at 2 consecutive): ", sum(cdp_confirmed$cdp), "\n")
+cat("CDP rate   (confirmed):                   ",
+    round(100 * mean(cdp_confirmed$cdp), 1), "%\n")
+
+# Decision: use unconfirmed - confirmed gives only 13 events (too few)
+# unconfirmed gives 30 events, sufficient for modelling
+# note: cdp_confirmed is not used anywhere past this point - it exists
+# only to justify the decision above
+```
+
+## Handle deceased patients
+
+```{r censor-deaths}
+last_visits <- visits_key %>%
+  group_by(PATIENT_ID) %>%
+  summarise(last_visit = max(DATE_OF_VISIT, na.rm = TRUE))
+
+deceased_patients <- patients_key %>%
+  filter(DEAD == TRUE) %>%
+  left_join(last_visits, by = "PATIENT_ID") %>%
+  mutate(followup_at_death = as.numeric(
+    difftime(last_visit, SYMPTOMS_DATE, units = "days")
+  ) / 365.25)
+
+cat("Total deceased patients:                                ", nrow(deceased_patients), "\n")
+cat("Deceased with follow-up under 6 years (within window): ",
+    sum(deceased_patients$followup_at_death <= 6, na.rm = TRUE), "\n")
+```
+
+## Final modelling cohort
+
+```{r modelling-cohort}
+# inclusion criteria: 2+ EDSS values in years 0-3 (feature window), at least
+# one visit with EDSS in years 4-6 (prediction window), not deceased within
+# the prediction window
+
+eligible_feature <- visits_key %>%
+  filter(!is.na(EDSS),
+         DURATION_OF_MS_AT_VISIT >= 0,
+         DURATION_OF_MS_AT_VISIT <= 3) %>%
+  count(PATIENT_ID) %>%
+  filter(n >= 2) %>%
+  pull(PATIENT_ID)
+
+eligible_prediction <- visits_key %>%
+  filter(DURATION_OF_MS_AT_VISIT >= 4,
+         DURATION_OF_MS_AT_VISIT <= 6,
+         !is.na(EDSS)) %>%
+  distinct(PATIENT_ID) %>%
+  pull(PATIENT_ID)
+
+deceased_early <- deceased_patients %>%
+  filter(followup_at_death <= 6) %>%
+  pull(PATIENT_ID)
+
+final_cohort <- intersect(eligible_feature, eligible_prediction)
+final_cohort <- setdiff(final_cohort, deceased_early)
+
+cat("Patients with 2+ EDSS in feature window:          ", length(eligible_feature), "\n")
+cat("Patients with visits in prediction window:        ", length(eligible_prediction), "\n")
+cat("Removed - deceased within prediction window:      ", length(deceased_early), "\n")
+cat("Final modelling cohort:                           ", length(final_cohort), "\n")
+```
+
+## Included vs Excluded Patient Comparison
+
+```{r inc-vs-exc-comparison}
+excluded_cohort <- setdiff(patients_key$PATIENT_ID, final_cohort)
+
+comparison_tbl <- patients_key %>%
+  mutate(group = ifelse(PATIENT_ID %in% final_cohort, "Included", "Excluded")) %>%
+  group_by(group) %>%
+  summarise(
+    n = n(),
+    mean_age = round(mean(age_at_onset, na.rm = TRUE), 1),
+    pct_female = round(100 * mean(GENDER == "F", na.rm = TRUE), 1),
+    pct_cis = round(100 * mean(MSCOURSE_1 == "CIS", na.rm = TRUE), 1),
+    pct_pp = round(100 * mean(MSCOURSE_1 == "PP", na.rm = TRUE), 1)
+  )
+
+comparison_tbl
+```
+
+## Follow-up Length by Inclusion Status
+
+```{r followup-comparison}
+followup_comparison <- visits_key %>%
+  group_by(PATIENT_ID) %>%
+  summarise(n_visits = n()) %>%
+  mutate(group = ifelse(PATIENT_ID %in% final_cohort, "Included", "Excluded")) %>%
+  group_by(group) %>%
+  summarise(
+    mean_visits = round(mean(n_visits, na.rm = TRUE), 1),
+    median_visits = median(n_visits, na.rm = TRUE)
+  )
+
+followup_comparison
+```
+## CDP outcome within final cohort
+
+```{r cdp-final}
+cdp_final <- cdp_unconfirmed %>%
+  filter(PATIENT_ID %in% final_cohort)
+
+cat("Final cohort size:                  ", length(final_cohort), "\n")
+cat("CDP events in final cohort:         ", sum(cdp_final$cdp), "\n")
+cat("CDP rate in final cohort:           ", round(100 * mean(cdp_final$cdp), 1), "%\n")
+cat("Non-CDP in final cohort:            ", sum(!cdp_final$cdp), "\n")
+
+patients_no_outcome <- final_cohort[!final_cohort %in% cdp_final$PATIENT_ID]
+cat("Patients with no assignable outcome:", length(patients_no_outcome), "\n")
+```
+
+## Alternative window - 0–4yr feature, 5–8yr prediction
+
+> Exploratory check only. Not part of the final pipeline. Reported in weekly update.
+
+```{r window-alternative}
+eligible_feature_4yr <- visits_key %>%
+  filter(!is.na(EDSS),
+         DURATION_OF_MS_AT_VISIT >= 0,
+         DURATION_OF_MS_AT_VISIT <= 4) %>%
+  count(PATIENT_ID) %>%
+  filter(n >= 2) %>%
+  pull(PATIENT_ID)
+
+eligible_prediction_58 <- visits_key %>%
+  filter(DURATION_OF_MS_AT_VISIT >= 5,
+         DURATION_OF_MS_AT_VISIT <= 8) %>%
+  distinct(PATIENT_ID) %>%
+  pull(PATIENT_ID)
+
+cohort_4yr <- intersect(eligible_feature_4yr, eligible_prediction_58)
+
+prediction_visits_58 <- visits_key %>%
+  filter(DURATION_OF_MS_AT_VISIT >= 5,
+         DURATION_OF_MS_AT_VISIT <= 8,
+         !is.na(EDSS)) %>%
+  left_join(baseline_edss, by = "PATIENT_ID") %>%
+  mutate(
+    edss_increase   = EDSS - baseline_edss,
+    meets_threshold = edss_increase >= cdp_threshold
+  )
+
+cdp_58 <- prediction_visits_58 %>%
+  group_by(PATIENT_ID) %>%
+  summarise(cdp = any(meets_threshold, na.rm = TRUE)) %>%
+  filter(PATIENT_ID %in% cohort_4yr)
+
+cat("Feature 0-4yr, prediction 5-8yr:\n")
+cat("Cohort size: ", length(cohort_4yr), "\n")
+cat("CDP events:  ", sum(cdp_58$cdp), "\n")
+cat("CDP rate:    ", round(100 * mean(cdp_58$cdp), 1), "%\n")
+```
+
+---
+
+# Week 3 - Feature Engineering
+
+> Feature window: years 0–3 from symptom onset. Prediction window: years 4–6.  
+> Ordinal matrix is complete - no imputation needed.
+
+## Finalise MS course grouping
+
+```{r course-fix}
+# Rename Unknown → "MS" (patients without a recorded disease course
+# at onset who were nonetheless diagnosed)
+patients_key <- patients_key %>%
+  mutate(MSCOURSE_grouped = case_when(
+    MSCOURSE_1 == "CIS" ~ "CIS",
+    MSCOURSE_1 == "PP"  ~ "PP",
+    is.na(MSCOURSE_1)   ~ "MS",
+    TRUE                ~ "Other"
+  ))
+
+patients_key %>%
+  count(MSCOURSE_grouped, sort = TRUE) %>%
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) %>%
+  kable(col.names = c("MS Course", "N", "Percent"),
+        caption   = "MS course grouping (full cohort, pre-merge)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Feature window visits
+
+```{r feature-visits}
+feature_visits <- visits_key %>%
+  filter(PATIENT_ID %in% final_cohort,
+         !is.na(EDSS),
+         DURATION_OF_MS_AT_VISIT >= 0,
+         DURATION_OF_MS_AT_VISIT <= 3)
+
+edss_counts <- feature_visits %>%
+  count(PATIENT_ID, name = "n_edss_in_window")
+
+cat("EDSS observations per patient in feature window:\n")
+summary(edss_counts$n_edss_in_window)
+
+patients_slope_eligible <- edss_counts %>%
+  filter(n_edss_in_window >= 3) %>%
+  pull(PATIENT_ID)
+
+cat("\nPatients with 3+ EDSS values (slope computable): ",
+    length(patients_slope_eligible), "\n")
+cat("Patients with exactly 2 EDSS values (slope NA):  ",
+    sum(edss_counts$n_edss_in_window == 2), "\n")
+```
+
+## Continuous EDSS features
+
+```{r features-continuous}
+edss_slope <- feature_visits %>%
+  filter(PATIENT_ID %in% patients_slope_eligible) %>%
+  group_by(PATIENT_ID) %>%
+  summarise(
+    edss_slope = coef(lm(EDSS ~ DURATION_OF_MS_AT_VISIT))[2]
+  ) %>%
+  ungroup()
+
+edss_variability <- feature_visits %>%
+  group_by(PATIENT_ID) %>%
+  summarise(edss_sd = sd(EDSS, na.rm = TRUE)) %>%
+  ungroup()
+
+cat("EDSS slope - summary:\n")
+summary(edss_slope$edss_slope)
+cat("\nEDSS variability (SD) - summary:\n")
+summary(edss_variability$edss_sd)
+```
+
+## Ordinal EDSS features
+
+```{r features-ordinal}
+ordinal_features <- feature_visits %>%
+  arrange(PATIENT_ID, DATE_OF_VISIT) %>%
+  group_by(PATIENT_ID) %>%
+  summarise(
+    n_worsening_steps = sum(diff(EDSS) >= 0.5, na.rm = TRUE),
+    ordinal_change    = last(EDSS) - first(EDSS),
+    max_edss          = max(EDSS, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+cat("Worsening steps - summary:\n")
+summary(ordinal_features$n_worsening_steps)
+cat("\nOrdinal change (first to last) - summary:\n")
+summary(ordinal_features$ordinal_change)
+```
+
+## Visit frequency in feature window
+
+```{r feature-visit-freq}
+visit_frequency <- visits_key %>%
+  filter(PATIENT_ID %in% final_cohort,
+         DURATION_OF_MS_AT_VISIT >= 0,
+         DURATION_OF_MS_AT_VISIT <= 3) %>%
+  group_by(PATIENT_ID) %>%
+  summarise(
+    total_visits  = n(),
+    visit_freq_yr = n() / 3
+  ) %>%
+  ungroup()
+
+cat("Visit frequency (per year) - summary:\n")
+summary(visit_frequency$visit_freq_yr)
+```
+
+## Apply 30-day rule to relapses
+
+```{r relapse-30day-rule}
+# apply 30-day rule to MS-0122
+# relapses within 30 days of the previous one count as the same episode
+relapses_key_clean <- relapses_key %>%
+  arrange(PATIENT_ID, DATE_OF_ONSET) %>%
+  group_by(PATIENT_ID) %>%
+  mutate(
+    days_since_prev = as.numeric(DATE_OF_ONSET - lag(DATE_OF_ONSET)),
+    keep            = is.na(days_since_prev) | days_since_prev >= 30
+  ) %>%
+  filter(keep) %>%
+  ungroup() %>%
+  select(PATIENT_ID, DATE_OF_ONSET)
+
+# verify MS-0122 corrected count
+ms0122_raw     <- relapses_key       %>% filter(PATIENT_ID == "MS-0122") %>% nrow()
+ms0122_cleaned <- relapses_key_clean %>% filter(PATIENT_ID == "MS-0122") %>% nrow()
+
+cat("MS-0122 relapses - raw:     ", ms0122_raw,     "\n")
+cat("MS-0122 relapses - cleaned: ", ms0122_cleaned, "\n")
+```
+
+## Relapse count in feature window
+
+```{r feature-relapses}
+relapse_counts <- relapses_key_clean %>%
+  left_join(patients_key %>% select(PATIENT_ID, SYMPTOMS_DATE),
+            by = "PATIENT_ID") %>%
+  mutate(
+    time_since_onset = as.numeric(
+      difftime(DATE_OF_ONSET, SYMPTOMS_DATE, units = "days")
+    ) / 365.25
+  ) %>%
+  filter(PATIENT_ID %in% final_cohort,
+         time_since_onset >= 0,
+         time_since_onset <= 3) %>%
+  count(PATIENT_ID, name = "relapse_count")
+
+# patients with no relapses get 0, not NA
+relapse_counts_full <- tibble(PATIENT_ID = final_cohort) %>%
+  left_join(relapse_counts, by = "PATIENT_ID") %>%
+  mutate(relapse_count = replace_na(relapse_count, 0))
+
+cat("Relapse count in feature window - summary:\n")
+summary(relapse_counts_full$relapse_count)
+cat("Patients with zero relapses:", sum(relapse_counts_full$relapse_count == 0), "\n")
+
+relapse_counts_full %>%
+  arrange(desc(relapse_count)) %>%
+  head(5) %>%
+  kable(caption = "Top 5 patients by relapse count") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Merge small MS course groups
+
+```{r course-merge}
+# In the 74-patient modelling cohort: CIS = 66, MS = 4, PP = 4
+# MS and PP both under threshold of 10 - merge into "Other"
+patients_key <- patients_key %>%
+  mutate(MSCOURSE_grouped = fct_collapse(
+    factor(MSCOURSE_grouped),
+    Other = c("MS", "PP")
+  ))
+
+patients_key %>%
+  count(MSCOURSE_grouped, sort = TRUE) %>%
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) %>%
+  kable(col.names = c("MS Course", "N", "Percent"),
+        caption   = "Final MS course grouping (full cohort, post-merge)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+```
+
+## Assemble feature matrices
+
+```{r feature-matrix-continuous}
+features_continuous <- tibble(PATIENT_ID = final_cohort) %>%
+  left_join(baseline_edss %>% select(PATIENT_ID, baseline_edss), by = "PATIENT_ID") %>%
+  left_join(edss_slope,                                           by = "PATIENT_ID") %>%
+  left_join(edss_variability,                                     by = "PATIENT_ID") %>%
+  left_join(visit_frequency %>% select(PATIENT_ID, visit_freq_yr), by = "PATIENT_ID") %>%
+  left_join(relapse_counts_full,                                  by = "PATIENT_ID") %>%
+  left_join(patients_key %>% select(PATIENT_ID, age_at_onset,
+                                     GENDER, MSCOURSE_grouped),  by = "PATIENT_ID") %>%
+  left_join(cdp_final,                                            by = "PATIENT_ID") %>%
+  mutate(
+    GENDER           = factor(GENDER),
+    MSCOURSE_grouped = factor(MSCOURSE_grouped),
+    cdp              = as.integer(cdp)
+  )
+
+cat("Continuous feature matrix:", nrow(features_continuous), "rows x",
+    ncol(features_continuous), "columns\n")
+features_continuous %>%
+  count(MSCOURSE_grouped) %>%
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) %>%
+  kable(caption = "MS course distribution in 74-patient modelling cohort") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r feature-matrix-ordinal}
+features_ordinal <- tibble(PATIENT_ID = final_cohort) %>%
+  left_join(baseline_edss %>% select(PATIENT_ID, baseline_edss), by = "PATIENT_ID") %>%
+  left_join(ordinal_features,                                     by = "PATIENT_ID") %>%
+  left_join(visit_frequency %>% select(PATIENT_ID, visit_freq_yr), by = "PATIENT_ID") %>%
+  left_join(relapse_counts_full,                                  by = "PATIENT_ID") %>%
+  left_join(patients_key %>% select(PATIENT_ID, age_at_onset,
+                                     GENDER, MSCOURSE_grouped),  by = "PATIENT_ID") %>%
+  left_join(cdp_final,                                            by = "PATIENT_ID") %>%
+  mutate(
+    GENDER           = factor(GENDER),
+    MSCOURSE_grouped = factor(MSCOURSE_grouped),
+    cdp              = as.integer(cdp)
+  )
+
+cat("Ordinal feature matrix:", nrow(features_ordinal), "rows x",
+    ncol(features_ordinal), "columns\n")
+```
+
+## Missing values per feature
+
+```{r feature-missing}
+# continuous matrix
+features_continuous %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "feature", values_to = "n_missing") %>%
+  mutate(pct_missing = round(100 * n_missing / nrow(features_continuous), 1)) %>%
+  arrange(desc(n_missing)) %>%
+  kable(caption = "Missing values - continuous matrix") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# ordinal matrix
+features_ordinal %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "feature", values_to = "n_missing") %>%
+  mutate(pct_missing = round(100 * n_missing / nrow(features_ordinal), 1)) %>%
+  arrange(desc(n_missing)) %>%
+  kable(caption = "Missing values - ordinal matrix") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Feature summaries
+
+```{r feature-summary}
+cat("=== Continuous feature matrix ===\n")
+features_continuous %>% select(-PATIENT_ID, -cdp) %>% summary()
+
+cat("\n=== Ordinal feature matrix ===\n")
+features_ordinal %>% select(-PATIENT_ID, -cdp) %>% summary()
+```
+
+## Feature distributions
+
+```{r feature-plots, fig.height=10}
+p1 <- ggplot(features_continuous %>% filter(!is.na(baseline_edss)),
+             aes(x = baseline_edss)) +
+  geom_histogram(bins = 15, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  labs(title = "Baseline EDSS", x = "EDSS", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p2 <- ggplot(features_continuous %>% filter(!is.na(edss_slope)),
+             aes(x = edss_slope)) +
+  geom_histogram(bins = 15, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  geom_vline(xintercept = 0, colour = "#C85250", linetype = "dashed") +
+  labs(title = "EDSS Slope", x = "EDSS units per year", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p3 <- ggplot(features_continuous %>% filter(!is.na(edss_sd)),
+             aes(x = edss_sd)) +
+  geom_histogram(bins = 15, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  labs(title = "EDSS Variability (SD)", x = "SD", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p4 <- ggplot(features_continuous %>% filter(!is.na(age_at_onset)),
+             aes(x = age_at_onset)) +
+  geom_histogram(bins = 20, fill = "#5A8A5A", colour = "white", alpha = 0.85) +
+  labs(title = "Age at Onset", x = "Years", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p5 <- ggplot(features_continuous, aes(x = relapse_count)) +
+  geom_histogram(bins = 10, fill = "#C85250", colour = "white", alpha = 0.85) +
+  labs(title = "Relapse Count in Feature Window",
+       x = "Number of relapses", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p6 <- ggplot(features_continuous %>% filter(!is.na(MSCOURSE_grouped)),
+             aes(x = MSCOURSE_grouped, fill = MSCOURSE_grouped)) +
+  geom_bar(colour = "white", alpha = 0.85) +
+  scale_fill_manual(values = c("#2E4D7B", "#C85250", "#5A8A5A")) +
+  labs(title = "MS Course", x = "", y = "Patients") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+
+ggarrange(p1, p2, p3, p4, p5, p6, ncol = 2, nrow = 3)
+```
+
+## CDP balance check
+
+```{r cdp-balance}
+cat("Continuous matrix - outcome distribution:\n")
+features_continuous %>%
+  count(cdp) %>%
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) %>%
+  kable(col.names = c("CDP", "N", "Percent"),
+        caption   = "Outcome balance - continuous matrix") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+cat("\nOrdinal matrix - outcome distribution:\n")
+features_ordinal %>%
+  count(cdp) %>%
+  mutate(pct = percent(n / sum(n), accuracy = 0.1)) %>%
+  kable(col.names = c("CDP", "N", "Percent"),
+        caption   = "Outcome balance - ordinal matrix") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Save final matrices
+
+```{r save-matrices}
+
+saveRDS(features_continuous, "features_continuous.rds")
+saveRDS(features_ordinal,    "features_ordinal.rds")
+
+cat("Matrices saved.\n")
+cat("Continuous:", nrow(features_continuous), "patients,",
+    ncol(features_continuous) - 2, "features\n")
+cat("Ordinal:   ", nrow(features_ordinal), "patients,",
+    ncol(features_ordinal) - 2, "features\n")
+```
+---
+
+# Week 4 - Imputation Pipeline
+
+> Continuous matrix has `r sum(is.na(features_continuous$edss_slope))` missing edss_slope values (`r round(100 * mean(is.na(features_continuous$edss_slope)), 1)`%).
+> Four strategies applied: complete case, median imputation, MICE, joint model (jomo).
+> Ordinal matrix is complete - no imputation needed.
+
+## Load libraries for imputation
+
+```{r imputation-libraries}
+library(mice)
+library(jomo)
+```
+
+## Strategy 1 - Complete case analysis
+
+```{r impute-cc}
+# drop patients with any missing feature
+# only edss_slope is missing so this removes the 22 patients with 2 EDSS values
+features_cc <- features_continuous %>%
+  filter(complete.cases(select(., -PATIENT_ID)))
+
+cat("Complete case cohort:    ", nrow(features_cc), "patients\n")
+cat("CDP events retained:     ", sum(features_cc$cdp), "\n")
+cat("Patients removed:        ", nrow(features_continuous) - nrow(features_cc), "\n")
+cat("CDP rate after CC:       ", round(100 * mean(features_cc$cdp), 1), "%\n")
+```
+
+## Strategy 2 - Median imputation
+
+```{r impute-median}
+# replace missing edss_slope with column median
+median_slope <- median(features_continuous$edss_slope, na.rm = TRUE)
+
+features_median <- features_continuous %>%
+  mutate(edss_slope = if_else(is.na(edss_slope), median_slope, edss_slope))
+
+cat("Median imputed cohort:     ", nrow(features_median), "patients\n")
+cat("Slopes imputed:          ", sum(is.na(features_continuous$edss_slope)), "\n")
+cat("Median used for imputation:", round(median_slope, 4), "\n")
+
+# verify no missing values remain
+cat("Missing after imputation:", sum(is.na(features_median$edss_slope)), "\n")
+```
+
+## Strategy 3 - MICE
+
+```{r impute-mice}
+# edss_slope is the only missing variable
+# edss_slope is a continuous derived feature (regression coefficient)
+# pmm is correct for continuous variables
+# polr (proportional odds logistic regression) would apply if imputing
+# raw EDSS scores directly - relevant for ordinal arm if needed later
+
+mice_data <- features_continuous %>%
+  select(-PATIENT_ID)
+
+mice_methods <- make.method(mice_data)
+mice_methods["edss_slope"] <- "pmm"
+
+pred_matrix <- make.predictorMatrix(mice_data)
+
+set.seed(42)
+mice_imp <- mice(
+  mice_data,
+  m               = 20,
+  method          = mice_methods,
+  predictorMatrix = pred_matrix,
+  printFlag       = FALSE
+)
+
+cat("MICE completed\n")
+cat("Number of imputed datasets:", mice_imp$m, "\n")
+cat("Variables imputed:", paste(names(mice_imp$method[mice_imp$method != ""]), collapse = ", "), "\n")
+cat("MICE methods assigned:\n")
+print(mice_imp$method)
+cat("\nMICE sanity checks and slope summary:\n")
+mice_imp1_slopes <- complete(mice_imp, 1)$edss_slope
+mice_imp2_slopes <- complete(mice_imp, 2)$edss_slope
+observed_idx     <- !is.na(features_continuous$edss_slope)
+
+cat("\nMICE sanity checks:\n")
+cat("  Observed slopes unchanged between imp 1 and 2:",
+    all(mice_imp1_slopes[observed_idx] == mice_imp2_slopes[observed_idx]), "\n")
+cat("  N patients with imputed slope:", sum(!observed_idx), "\n")
+cat("  Imputed slope range imp 1:", round(range(mice_imp1_slopes[!observed_idx]), 3), "\n")
+cat("  Imputed slope range imp 2:", round(range(mice_imp2_slopes[!observed_idx]), 3), "\n")
+cat("  Imputed values differ between imp 1 and 2:",
+    !all(mice_imp1_slopes[!observed_idx] == mice_imp2_slopes[!observed_idx]), "\n")
+summary(complete(mice_imp, 1)$edss_slope)
+```
+
+## Strategy 4 - Bayesian multiple imputation (jomo)
+
+```{r impute-jomo}
+# jomo: Bayesian multiple imputation
+# jomo package - Quartagno & Carpenter 2019
+
+jomo_Y <- features_continuous %>%
+  select(edss_slope) %>%
+  as.data.frame()
+
+jomo_X <- features_continuous %>%
+  select(baseline_edss, edss_sd, visit_freq_yr,
+         relapse_count, age_at_onset,
+         GENDER, MSCOURSE_grouped,   
+         cdp) %>%
+  mutate(
+    GENDER           = as.numeric(GENDER),
+    MSCOURSE_grouped = as.numeric(MSCOURSE_grouped),
+    cdp              = as.numeric(cdp)
+  ) %>%
+  as.data.frame()
+
+set.seed(42)
+jomo_imp <- jomo(
+  Y        = jomo_Y,
+  X        = jomo_X,
+  nimp     = 20,
+  nburn    = 1000,
+  nbetween = 100
+)
+
+cat("jomo output columns:", paste(names(jomo_imp), collapse = ", "), "\n")
+cat("jomo completed — 20 imputed datasets\n")
+
+# --- sanity checks ---
+jomo_imp1 <- jomo_imp %>% filter(Imputation == 1)
+jomo_imp2 <- jomo_imp %>% filter(Imputation == 2)
+observed_idx <- !is.na(features_continuous$edss_slope)
+jomo_slopes1 <- as.numeric(jomo_imp1$edss_slope)
+jomo_slopes2 <- as.numeric(jomo_imp2$edss_slope)
+
+cat("\njomo sanity checks:\n")
+cat("  Rows in imp 1:", nrow(jomo_imp1), "(should be", nrow(features_continuous), ")\n")
+cat("  Rows in imp 2:", nrow(jomo_imp2), "(should be", nrow(features_continuous), ")\n")
+cat("  Observed slopes identical between imp 1 and 2:",
+    all(abs(jomo_slopes1[observed_idx] - jomo_slopes2[observed_idx]) < 1e-10), "\n")
+cat("  N patients with imputed slope:", sum(!observed_idx), "\n")
+cat("  Imputed slope range imp 1:", round(range(jomo_slopes1[!observed_idx]), 3), "\n")
+cat("  Imputed slope range imp 2:", round(range(jomo_slopes2[!observed_idx]), 3), "\n")
+cat("  Imputed values differ between imp 1 and 2:",
+    !all(jomo_slopes1[!observed_idx] == jomo_slopes2[!observed_idx]), "\n")
+```
+
+## Compare imputed slope distributions
+
+```{r impute-compare}
+# plot slope distribution across all four strategies side by side
+# showing imputation 1 of 20 as a representative example for MICE and jomo
+# all 20 imputations produce similar distributions — showing all would overcrowd the plot
+# key comparison: do imputed slopes preserve the shape and centre of the observed distribution?
+slope_cc   <- features_cc   %>% mutate(strategy = "Complete Case")   %>% select(edss_slope, strategy)
+slope_mean <- features_median %>% mutate(strategy = "Median Imputation") %>% select(edss_slope, strategy)
+
+slope_mice <- complete(mice_imp, 1) %>%
+  as_tibble() %>%
+  mutate(strategy = "MICE") %>%
+  select(edss_slope, strategy)
+
+slope_jomo <- jomo_imp %>%
+  filter(Imputation == 1) %>%
+  as_tibble() %>%
+  mutate(strategy = "Bayesian MI (jomo)",
+         edss_slope = as.numeric(edss_slope)) %>%
+  select(edss_slope, strategy)
+
+slope_original <- features_continuous %>%
+  filter(!is.na(edss_slope)) %>%
+  mutate(strategy = "Original (observed)") %>%
+  select(edss_slope, strategy)
+
+all_slopes <- bind_rows(slope_original, slope_cc, slope_mean,
+                         slope_mice, slope_jomo)
+
+ggplot(all_slopes, aes(x = edss_slope, fill = strategy)) +
+  geom_histogram(bins = 20, colour = "white", alpha = 0.8) +
+  facet_wrap(~ strategy, ncol = 1) +
+  geom_vline(xintercept = 0, colour = "#C85250", linetype = "dashed") +
+  labs(
+  title    = "EDSS Slope Distribution by Imputation Strategy",
+  subtitle = paste0(
+    "MICE and jomo: one representative imputed dataset shown (imputation 1 of 20).\n",
+    "Complete Case: 52 patients with observed slopes only (22 excluded).\n",
+    "Median Imputed: all 74 patients, missing slopes filled with median value.\n",
+    "Original: the 52 observed slopes before any imputation.\n",
+    "Dashed line at zero = no change in EDSS over the feature window."
+  ),
+  x = "EDSS slope (units per year)",
+  y = "Count"
+) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+## Ordinal matrix - no imputation needed
+
+```{r ordinal-complete}
+# ordinal matrix has zero missing values
+# passes directly to modelling without imputation
+cat("Ordinal matrix missing values:", sum(is.na(features_ordinal %>% select(-PATIENT_ID))), "\n")
+cat("Ordinal matrix ready for modelling:", nrow(features_ordinal),
+    "patients,", ncol(features_ordinal) - 2, "features\n")
+```
+
+## Save all imputed datasets
+
+```{r save-imputed}
+# save each strategy for use in modelling week
+saveRDS(features_cc,   "features_cc.rds")
+saveRDS(features_median, "features_median.rds") # median imputed
+saveRDS(mice_imp,      "features_mice.rds")    # full mice object - pool results later
+saveRDS(jomo_imp,      "features_jomo.rds")    # full jomo output
+
+cat("All imputed datasets saved\n")
+```
+---
+
+# Week 5 - Modelling Pipeline
+
+> LASSO feature selection applied before each model.
+> Three models: logistic regression, random forest, gradient boosting.
+> Evaluation: AUC and Brier score with repeated cross-validation.
+> Class imbalance handled via weighting (LR, GBM) and undersampling (RF).
+> MICE and jomo predictions pooled by averaging predicted probabilities 
+> across 20 imputations
+
+## Load libraries for modelling
+
+```{r modelling-libraries}
+library(glmnet)
+library(randomForest)
+library(gbm)
+library(pROC)
+library(caret)
+```
+
+## Helper functions
+
+```{r modelling-helpers}
+# class weights computed from the full dataset passed in (not recomputed per fold)
+# w_i = n / (2 * n_class) gives equal total weight to each outcome class
+# when subsetted to a training fold, the weights retain the full-dataset class proportions
+# (17 CDP, 57 non-CDP in the full 74-patient cohort)
+# this is specified here and acknowledged as a methodological detail in the thesis
+get_weights <- function(cdp) {
+  n      <- length(cdp)
+  n_pos  <- sum(cdp == 1)
+  n_neg  <- sum(cdp == 0)
+  w      <- ifelse(cdp == 1, n / (2 * n_pos), n / (2 * n_neg))
+  return(w)
+}
+
+get_dummy_matrix <- function(df) {
+  df %>%
+    select(-PATIENT_ID, -cdp) %>%
+    model.matrix(~ . - 1, data = .) %>%
+    as.matrix()
+}
+
+evaluate_model <- function(actual, predicted_prob) {
+  auc   <- as.numeric(auc(roc(actual, predicted_prob, quiet = TRUE)))
+  brier <- mean((predicted_prob - actual)^2)
+  list(auc = round(auc, 3), brier = round(brier, 3))
+}
+```
+
+## LASSO feature selection
+
+```{r lasso-cc}
+# LASSO feature selection - run on full dataset before CV loop
+# limitation: test fold patients' outcomes are visible during feature selection
+# this introduces optimistic bias in reported AUC values (acknowledged in thesis)
+# within-fold LASSO would be more correct but unstable with only 17 CDP events
+set.seed(42)
+
+run_lasso <- function(df, label, verbose = TRUE) {
+  X   <- get_dummy_matrix(df)
+  y   <- df$cdp
+  w   <- get_weights(y)
+
+  cv  <- cv.glmnet(X, y, family = "binomial", alpha = 1,
+                   weights = w, nfolds = 5)
+
+  selected <- coef(cv, s = "lambda.min")
+  selected <- rownames(selected)[selected[, 1] != 0]
+  selected <- selected[selected != "(Intercept)"]
+
+  if (verbose) {
+    cat(label, "- selected features:", paste(selected, collapse = ", "), "\n")
+  }
+  return(list(model = cv, features = selected, X = X, y = y, w = w))
+}
+
+lasso_cc     <- run_lasso(features_cc,     "Complete case")
+lasso_median <- run_lasso(features_median, "Median imputed")
+lasso_ord    <- run_lasso(features_ordinal,"Ordinal")
+```
+
+## Cross-validation pipeline
+
+```{r cv-pipeline}
+set.seed(42)
+
+# separate folds for each dataset, sized to that dataset's own patient count
+# (fewer patients in features_cc since complete-case dropped missing-slope patients)
+folds_52  <- createFolds(features_cc$cdp,      k = 5, returnTrain = TRUE)
+folds_74  <- createFolds(features_median$cdp,  k = 5, returnTrain = TRUE)
+folds_ord <- createFolds(features_ordinal$cdp, k = 5, returnTrain = TRUE)
+
+run_cv <- function(df, lasso_obj, label, folds) {
+
+  X_all <- lasso_obj$X
+  y_all <- lasso_obj$y
+  w_all <- lasso_obj$w
+  feats <- lasso_obj$features
+
+  results_lr  <- c()
+  results_rf  <- c()
+  results_gbm <- c()
+  brier_lr    <- c()
+  brier_rf    <- c()
+  brier_gbm   <- c()
+
+  # storage for out-of-fold predictions, filled in as each fold completes
+  probs_lr_oof  <- rep(NA, nrow(df))
+  probs_rf_oof  <- rep(NA, nrow(df))
+  probs_gbm_oof <- rep(NA, nrow(df))
+
+  for (i in seq_along(folds)) {
+    train_idx <- folds[[i]]
+    test_idx  <- setdiff(seq_len(nrow(df)), train_idx)
+
+    X_train <- X_all[train_idx, feats, drop = FALSE]
+    X_test  <- X_all[test_idx,  feats, drop = FALSE]
+    y_train <- y_all[train_idx]
+    y_test  <- y_all[test_idx]
+    # w_train: subset of weights computed from the full dataset in run_lasso()
+    # not recomputed from the training fold — full-dataset class proportions are used
+    w_train <- w_all[train_idx]
+
+    train_df <- as.data.frame(X_train)
+    train_df$cdp <- y_train
+    test_df  <- as.data.frame(X_test)
+
+    # logistic regression
+    lr_fit  <- glm(cdp ~ ., data = train_df, family = binomial, weights = w_train)
+    lr_pred <- predict(lr_fit, newdata = test_df, type = "response")
+    ev_lr   <- evaluate_model(y_test, lr_pred)
+    results_lr <- c(results_lr, ev_lr$auc)
+    brier_lr   <- c(brier_lr,   ev_lr$brier)
+
+    # random forest
+    n_minority <- sum(y_train == 1)
+    rf_fit <- randomForest(
+      x        = X_train,
+      y        = factor(y_train),
+      ntree    = 500,
+      sampsize = c(n_minority, n_minority)
+    )
+    rf_pred <- predict(rf_fit, newdata = X_test, type = "prob")[, 2]
+    ev_rf   <- evaluate_model(y_test, rf_pred)
+    results_rf <- c(results_rf, ev_rf$auc)
+    brier_rf   <- c(brier_rf,   ev_rf$brier)
+
+    # gradient boosting
+    gbm_fit  <- gbm(
+      cdp ~ .,
+      data              = train_df,
+      distribution      = "bernoulli",
+      n.trees           = 500,
+      interaction.depth = 2,
+      shrinkage         = 0.01,
+      n.minobsinnode    = 1,
+      bag.fraction      = 0.5,
+      weights           = w_train,
+      verbose           = FALSE
+    )
+    gbm_pred <- predict(gbm_fit, newdata = test_df, n.trees = 500, type = "response")
+    ev_gbm   <- evaluate_model(y_test, gbm_pred)
+    results_gbm <- c(results_gbm, ev_gbm$auc)
+    brier_gbm   <- c(brier_gbm,   ev_gbm$brier)
+
+    # save this fold's test-set predictions into the full-length vector
+    probs_lr_oof[test_idx]  <- as.numeric(lr_pred)
+    probs_rf_oof[test_idx]  <- as.numeric(rf_pred)
+    probs_gbm_oof[test_idx] <- as.numeric(gbm_pred)
+  }
+
+  cat("\n===", label, "===\n")
+  cat("LR  AUC:", round(mean(results_lr),  3), "SD:", round(sd(results_lr),  3), "| Brier:", round(mean(brier_lr), 3), "\n")
+  cat("RF  AUC:", round(mean(results_rf),  3), "SD:", round(sd(results_rf),  3), "| Brier:", round(mean(brier_rf), 3), "\n")
+  cat("GBM AUC:", round(mean(results_gbm), 3), "SD:", round(sd(results_gbm), 3), "| Brier:", round(mean(brier_gbm), 3), "\n")
+
+  # return the summary table plus the OOF predictions for calibration plots
+  list(
+    table = tibble(
+      strategy   = label,
+      model      = c("Logistic Regression", "Random Forest", "Gradient Boosting"),
+      mean_auc   = c(mean(results_lr),  mean(results_rf),  mean(results_gbm)),
+      sd_auc     = c(sd(results_lr),    sd(results_rf),    sd(results_gbm)),
+      mean_brier = c(mean(brier_lr),    mean(brier_rf),    mean(brier_gbm))
+    ),
+    probs_lr  = probs_lr_oof,
+    probs_rf  = probs_rf_oof,
+    probs_gbm = probs_gbm_oof
+  )
+}
+
+results_cc     <- run_cv(features_cc,      lasso_cc,     "Complete Case - Continuous",  folds_52)
+results_median <- run_cv(features_median,  lasso_median, "Median Imputed - Continuous", folds_74)
+results_ord    <- run_cv(features_ordinal, lasso_ord,    "No Imputation - Ordinal",     folds_ord)
+```
+
+## MICE and jomo - pooled modelling
+
+```{r mice-jomo-pooling}
+set.seed(42)
+
+# pooling probabilities across M imputations
+# run 5-fold CV on each imputed dataset, average the predicted probs per
+# patient across the M datasets, then compute AUC/Brier from the averaged
+# probabilities. SD across the M per-imputation AUCs gives the uncertainty.
+
+run_cv_pooled <- function(imp_object, imp_type, label, M = 20) {
+
+  all_probs_lr  <- matrix(NA, nrow = nrow(features_continuous), ncol = M)
+  all_probs_rf  <- matrix(NA, nrow = nrow(features_continuous), ncol = M)
+  all_probs_gbm <- matrix(NA, nrow = nrow(features_continuous), ncol = M)
+
+  auc_lr_each  <- c()
+  auc_rf_each  <- c()
+  auc_gbm_each <- c()
+
+  for (m in 1:M) {
+
+    # extract the mth complete dataset
+    if (imp_type == "mice") {
+      df_m <- complete(imp_object, m) %>%
+        as_tibble() %>%
+        mutate(PATIENT_ID = features_continuous$PATIENT_ID)
+    } else {
+      df_m <- imp_object %>%
+        filter(Imputation == m) %>%
+        select(edss_slope, baseline_edss, edss_sd, visit_freq_yr,
+               relapse_count, age_at_onset, cdp) %>%
+        as_tibble() %>%
+        mutate(
+          across(everything(), as.numeric),
+          GENDER           = features_continuous$GENDER,
+          MSCOURSE_grouped = features_continuous$MSCOURSE_grouped,
+          PATIENT_ID       = features_continuous$PATIENT_ID
+        )
+    }
+
+    if (m == 1 && imp_type == "jomo") {
+      cat("Row order check for jomo - should say TRUE for all", nrow(df_m), "rows:\n")
+      print(nrow(df_m) == nrow(features_continuous))
+    }
+    # LASSO run on each full imputed dataset (all 74 patients) before CV folds
+    # same limitation applies as for the non-pooled strategies:
+    # feature selection sees all outcomes including those in subsequent test folds
+    lasso_m <- run_lasso(df_m, paste(label, "imp", m), verbose = FALSE)
+
+    X_all <- lasso_m$X
+    y_all <- lasso_m$y
+    w_all <- lasso_m$w
+    feats <- lasso_m$features
+
+    probs_lr_m  <- rep(NA, nrow(features_continuous))
+    probs_rf_m  <- rep(NA, nrow(features_continuous))
+    probs_gbm_m <- rep(NA, nrow(features_continuous))
+    
+    for (i in seq_along(folds_74)) {
+      train_idx <- folds_74[[i]]
+      test_idx  <- setdiff(seq_len(nrow(features_continuous)), train_idx)
+
+      X_train <- X_all[train_idx, feats, drop = FALSE]
+      X_test  <- X_all[test_idx,  feats, drop = FALSE]
+      y_train <- y_all[train_idx]
+      y_test  <- y_all[test_idx]
+      w_train <- w_all[train_idx]
+
+      train_df <- as.data.frame(X_train)
+      train_df$cdp <- y_train
+      test_df  <- as.data.frame(X_test)
+
+      # logistic regression
+      lr_fit <- glm(cdp ~ ., data = train_df,
+                    family = binomial, weights = w_train)
+      probs_lr_m[test_idx] <- predict(lr_fit, newdata = test_df,
+                                       type = "response")
+
+      # random forest
+      n_min <- sum(y_train == 1)
+      rf_fit <- randomForest(
+        x        = X_train,
+        y        = factor(y_train),
+        ntree    = 500,
+        sampsize = c(n_min, n_min)
+      )
+      probs_rf_m[test_idx] <- predict(rf_fit, newdata = X_test,
+                                       type = "prob")[, 2]
+
+      # gradient boosting
+      gbm_fit <- gbm(
+        cdp ~ .,
+        data              = train_df,
+        distribution      = "bernoulli",
+        n.trees           = 500,
+        interaction.depth = 2,
+        shrinkage         = 0.01,
+        n.minobsinnode    = 1,
+        bag.fraction      = 0.5,
+        weights           = w_train,
+        verbose           = FALSE
+      )
+      probs_gbm_m[test_idx] <- predict(gbm_fit, newdata = test_df,
+                                        n.trees = 500, type = "response")
+    }
+
+    all_probs_lr[,  m] <- probs_lr_m
+    all_probs_rf[,  m] <- probs_rf_m
+    all_probs_gbm[, m] <- probs_gbm_m
+
+    y <- y_all
+    auc_lr_each  <- c(auc_lr_each,
+                      as.numeric(auc(roc(y, probs_lr_m,  quiet = TRUE))))
+    auc_rf_each  <- c(auc_rf_each,
+                      as.numeric(auc(roc(y, probs_rf_m,  quiet = TRUE))))
+    auc_gbm_each <- c(auc_gbm_each,
+                      as.numeric(auc(roc(y, probs_gbm_m, quiet = TRUE))))
+  }
+
+  # pool: average predicted probabilities across M imputations
+  pooled_lr  <- rowMeans(all_probs_lr,  na.rm = TRUE)
+  pooled_rf  <- rowMeans(all_probs_rf,  na.rm = TRUE)
+  pooled_gbm <- rowMeans(all_probs_gbm, na.rm = TRUE)
+
+  y <- features_continuous$cdp
+
+  ev_lr  <- evaluate_model(y, pooled_lr)
+  ev_rf  <- evaluate_model(y, pooled_rf)
+  ev_gbm <- evaluate_model(y, pooled_gbm)
+
+  cat("\n===", label, "===\n")
+  cat("LR  pooled AUC:", ev_lr$auc,
+      "| SD across imputations:", round(sd(auc_lr_each), 3),
+      "| Brier:", ev_lr$brier, "\n")
+  cat("RF  pooled AUC:", ev_rf$auc,
+      "| SD across imputations:", round(sd(auc_rf_each), 3),
+      "| Brier:", ev_rf$brier, "\n")
+  cat("GBM pooled AUC:", ev_gbm$auc,
+      "| SD across imputations:", round(sd(auc_gbm_each), 3),
+      "| Brier:", ev_gbm$brier, "\n")
+  # note on SD similarity across models for MICE and jomo:
+  # the SD here measures variability across the 20 imputed datasets, NOT across CV folds
+  # all three models see the same 20 versions of the slope feature
+  # so variation in AUC across imputations is driven by the imputed slope values, not the model
+  # this means the SD will be similar across LR, RF, and GBM for the same imputation strategy
+  # contrast with complete case and median imputed: those SDs are across CV folds (fold-level noise)
+  # which is why complete case GBM SD is 0.248 (fold instability) while jomo GBM SD is 0.030
+
+  results_table <- tibble(
+    strategy   = label,
+    model      = c("Logistic Regression", "Random Forest", "Gradient Boosting"),
+    pooled_auc = c(ev_lr$auc,   ev_rf$auc,   ev_gbm$auc),
+    sd_auc     = c(round(sd(auc_lr_each), 3),
+                   round(sd(auc_rf_each), 3),
+                   round(sd(auc_gbm_each), 3)),
+    brier      = c(ev_lr$brier, ev_rf$brier, ev_gbm$brier)
+  )
+
+  return(list(table = results_table,
+              pooled_lr = pooled_lr, pooled_rf = pooled_rf, pooled_gbm = pooled_gbm))
+}
+
+mice_out <- run_cv_pooled(mice_imp, "mice", "MICE - Continuous")
+jomo_out <- run_cv_pooled(jomo_imp, "jomo", "Bayesian MI (jomo) - Continuous")
+
+results_mice <- mice_out$table
+results_jomo <- jomo_out$table
+```
+
+## Complete comparison matrix
+
+```{r comparison-matrix}
+all_results_final <- bind_rows(
+  results_cc$table %>% rename(pooled_auc = mean_auc, brier = mean_brier),
+  results_median$table %>% rename(pooled_auc = mean_auc, brier = mean_brier),
+  results_ord$table    %>% rename(pooled_auc = mean_auc, brier = mean_brier),
+  results_mice,
+  results_jomo
+) %>%
+  mutate(
+    pooled_auc = round(pooled_auc, 3),
+    sd_auc     = round(sd_auc,     3),
+    brier      = round(brier,      3)
+  )
+print(as.data.frame(all_results_final))
+all_results_final %>%
+  kable(col.names = c("Strategy", "Model", "AUC", "SD", "Brier"),
+        caption   = "Full comparison matrix - all imputation strategies and models") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(which(all_results_final$strategy == "No Imputation - Ordinal"),
+           background = "#EBF5E8")
+```
+
+## Final results plot
+
+```{r final-plot}
+ggplot(all_results_final, aes(x = model, y = pooled_auc, fill = strategy)) +
+  geom_col(position = "dodge", colour = "white", alpha = 0.85) +
+  coord_cartesian(ylim = c(0.5, 1.0)) +
+  geom_errorbar(aes(ymin = pooled_auc - sd_auc,
+                    ymax = pooled_auc + sd_auc),
+                position = position_dodge(0.9), width = 0.25) +
+  scale_fill_manual(values = c("#2E4D7B", "#C85250", "#5A8A5A",
+                               "#E8A020", "#7B4F9E")) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", colour = "grey40") +
+  labs(title    = "Full Comparison Matrix - AUC by Strategy and Model",
+       subtitle = "Error bars = SD across imputations or CV folds. Dashed = random chance.",
+       x = "", y = "AUC", fill = "Strategy") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        axis.text.x     = element_text(angle = 20, hjust = 1))
+```
+
+## Calibration Plots
+
+```{r calibration-plots}
+library(ggplot2)
+
+calibration_plot <- function(probs, actual, title) {
+  df <- tibble(prob = probs, actual = actual) %>%
+    mutate(bin = cut(prob, breaks = seq(0, 1, by = 0.2),
+                     include.lowest = TRUE)) %>%
+    group_by(bin) %>%
+    summarise(
+      mean_pred = mean(prob),
+      mean_obs  = mean(actual),
+      n         = n()
+    )
+  print(df)
+  ggplot(df, aes(x = mean_pred, y = mean_obs)) +
+    geom_point(aes(size = n), colour = "#2E4D7B", alpha = 0.8) +
+    geom_abline(slope = 1, intercept = 0,
+                linetype = "dashed", colour = "#C85250") +
+    scale_x_continuous(limits = c(0, 1)) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(title    = title,
+         subtitle = "Dashed line = perfect calibration",
+         x = "Mean predicted probability",
+         y = "Observed event rate",
+         size = "N patients") +
+    theme_minimal(base_size = 12)
+}
+calibration_plot(mice_out$pooled_rf, features_continuous$cdp,
+                  "Calibration - Random Forest (MICE pooled)")
+
+calibration_plot(jomo_out$pooled_rf, features_continuous$cdp,
+                  "Calibration - Random Forest (jomo pooled)")
+calibration_plot(results_ord$probs_rf, features_ordinal$cdp,
+                  "Calibration - Random Forest (Ordinal)")
+```
+
+## Feature Importance
+
+```{r feature-importance}
+# train final RF on full ordinal dataset (best performing arm)
+# use all data not CV splits for importance plot
+
+X_full <- get_dummy_matrix(features_ordinal)
+y_full <- features_ordinal$cdp
+feats  <- lasso_ord$features
+
+rf_final <- randomForest(
+  x        = X_full[, feats, drop = FALSE],
+  y        = factor(y_full),
+  ntree    = 500,
+  importance = TRUE
+)
+
+importance_df <- importance(rf_final) %>%
+  as.data.frame() %>%
+  rownames_to_column("feature") %>%
+  arrange(desc(MeanDecreaseGini))
+print(importance_df)
+importance_df %>%
+  kable(caption = "Feature importance - ordinal RF (full dataset)",
+        digits  = 3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE)
+
+ggplot(importance_df, aes(x = reorder(feature, MeanDecreaseGini),
+                           y = MeanDecreaseGini)) +
+  geom_col(fill = "#2E4D7B", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Feature Importance - Ordinal Random Forest",
+       x = "", y = "Mean Decrease in Gini") +
+  theme_minimal(base_size = 12)
+```
+## GBM Feature Importance
+
+```{r gbm-importance}
+gbm_final <- gbm(
+  cdp ~ .,
+  data = as.data.frame(cbind(
+    X_full[, feats, drop = FALSE],
+    cdp = y_full
+  )),
+  distribution      = "bernoulli",
+  n.trees           = 500,
+  interaction.depth = 2,
+  shrinkage         = 0.01,
+  n.minobsinnode    = 1,
+  bag.fraction      = 0.5,
+  verbose           = FALSE
+)
+
+gbm_imp <- summary(gbm_final, plotit = FALSE) %>%
+  as_tibble() %>%
+  rename(feature = var, importance = rel.inf) %>%
+  arrange(desc(importance))
+print(gbm_imp)
+gbm_imp %>%
+  kable(caption = "Feature importance - ordinal GBM (full dataset)",
+        digits  = 3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE)
+
+ggplot(gbm_imp, aes(x = reorder(feature, importance), y = importance)) +
+  geom_col(fill = "#C85250", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Feature Importance - Ordinal GBM",
+       x = "", y = "Relative Influence (%)") +
+  theme_minimal(base_size = 12)
+```
+
+## Clinical Translation - Youden Threshold
+
+```{r clinical-transition}
+library(pROC)
+
+roc_ord_rf <- roc(features_ordinal$cdp, results_ord$probs_rf, quiet = TRUE)
+best_ord <- coords(roc_ord_rf, "best", best.method = "youden",
+                    ret = c("threshold", "sensitivity", "specificity",
+                            "ppv", "npv", "tp", "fp", "tn", "fn"))
+print(best_ord)
+
+roc_mice_gbm <- roc(features_continuous$cdp, mice_out$pooled_gbm, quiet = TRUE)
+best_mice <- coords(roc_mice_gbm, "best", best.method = "youden",
+                     ret = c("threshold", "sensitivity", "specificity",
+                             "ppv", "npv", "tp", "fp", "tn", "fn"))
+print(best_mice)
+```
+
+## Continuous Arm
+
+```{r continuous-arm}
+mice_imp1 <- complete(mice_imp, 1) %>%
+  as_tibble() %>%
+  mutate(PATIENT_ID = features_continuous$PATIENT_ID)
+
+lasso_mice1 <- run_lasso(mice_imp1, "MICE imp 1", verbose = FALSE)
+X_mice1 <- lasso_mice1$X[, lasso_mice1$features, drop = FALSE]
+y_mice1 <- lasso_mice1$y
+
+gbm_mice_final <- gbm(
+  cdp ~ .,
+  data = as.data.frame(cbind(X_mice1, cdp = y_mice1)),
+  distribution      = "bernoulli",
+  n.trees           = 500,
+  interaction.depth = 2,
+  shrinkage         = 0.01,
+  n.minobsinnode    = 1,
+  bag.fraction      = 0.5,
+  verbose           = FALSE
+)
+
+gbm_mice_imp <- summary(gbm_mice_final, plotit = FALSE) %>%
+  as_tibble() %>%
+  rename(feature = var, importance = rel.inf) %>%
+  arrange(desc(importance))
+print(gbm_mice_imp)
+
+ggplot(gbm_mice_imp, aes(x = reorder(feature, importance), y = importance)) +
+  geom_col(fill = "#5A8A5A", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Feature Importance - MICE GBM (Continuous, imputation 1)",
+       x = "", y = "Relative Influence (%)") +
+  theme_minimal(base_size = 12)
+
+```
+## Calibration - Worst Performing Combination
+
+```{r calibration-worst}
+# worst performing: complete case GBM
+# uses out-of-fold predicted probabilities from run_cv, not in-sample predictions
+# out-of-fold predictions come from 5-fold CV on the 52-patient complete case cohort
+calibration_plot(
+  probs  = results_cc$probs_gbm,
+  actual = features_cc$cdp,
+  title  = "Calibration - GBM (Complete Case) - Worst Performing"
+)
+```
+
+## MNAR Sensitivity
+
+```{r mnar-sensitivity}
+# tipping point analysis for MNAR assumption
+# shift the imputed slopes by a delta and see how AUC changes
+# if conclusions hold up to delta = 0.5 EDSS units per year, MNAR is not a concern
+missing_patients <- features_continuous$PATIENT_ID[is.na(features_continuous$edss_slope)]
+deltas <- seq(-0.5, 0.5, by = 0.1)
+auc_sensitivity <- c()
+
+for (delta in deltas) {
+  df_shifted <- features_median %>%
+    mutate(edss_slope = if_else(
+      PATIENT_ID %in% missing_patients,
+      edss_slope + delta,
+      edss_slope
+    ))
+
+  lasso_s <- run_lasso(df_shifted, paste("delta", delta))
+  X_s <- lasso_s$X
+  y_s <- lasso_s$y
+
+  lr_fit  <- glm(cdp ~ .,
+                 data    = as.data.frame(cbind(X_s[, lasso_s$features,
+                                                    drop = FALSE],
+                                               cdp = y_s)),
+                 family  = binomial,
+                 weights = lasso_s$w)
+
+  preds <- predict(lr_fit, type = "response")
+  auc_sensitivity <- c(auc_sensitivity,
+                       as.numeric(auc(roc(y_s, preds, quiet = TRUE))))
+}
+print(tibble(delta = deltas, auc = round(auc_sensitivity, 3)))
+tibble(delta = deltas, auc = round(auc_sensitivity, 3)) %>%
+  kable(col.names = c("Slope shift (EDSS/yr)", "In-sample LR AUC"),
+        caption   = "MNAR sensitivity - effect of shifting imputed slopes (in-sample AUC, not directly comparable to CV results above)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE)
+```
+---
+
+## Export Figures for Thesis
+
+```{r export-figures, include=FALSE}
+figures_path <- "Figures"
+dir.create(figures_path, showWarnings = FALSE)
+
+
+## EDA figures
+
+
+# Patient demographics grid (thesis: fig:patientdemographics)
+p_dem1 <- ggplot(patients_key, aes(x = age_at_onset)) +
+  geom_histogram(bins = 30, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  labs(title = "Age at Symptom Onset", x = "Age (years)", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+
+p_dem2 <- ggplot(patients_key %>% filter(!is.na(GENDER)),
+                 aes(x = GENDER, fill = GENDER)) +
+  geom_bar(colour = "white", alpha = 0.85) +
+  scale_fill_manual(values = c("#2E4D7B", "#C85250", "#5A8A5A")) +
+  labs(title = "Gender Distribution", x = "", y = "Number of patients") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+
+p_dem3 <- ggplot(patients_key %>% filter(!is.na(MSCOURSE_1)),
+                 aes(x = fct_infreq(MSCOURSE_1), fill = MSCOURSE_1)) +
+  geom_bar(colour = "white", alpha = 0.85) +
+  scale_fill_viridis_d() +
+  labs(title = "Initial Disease Course", x = "", y = "Number of patients") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(hjust = 0.5))
+
+p_dem4 <- ggplot(patients_key %>% filter(!is.na(diagnostic_delay_yrs),
+                                          diagnostic_delay_yrs >= 0,
+                                          diagnostic_delay_yrs < 30),
+                 aes(x = diagnostic_delay_yrs)) +
+  geom_histogram(bins = 25, fill = "#5A8A5A", colour = "white", alpha = 0.85) +
+  labs(title = "Diagnostic Delay", x = "Years", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+
+p_demographics <- ggarrange(p_dem1, p_dem2, p_dem3, p_dem4, ncol = 2, nrow = 2)
+ggsave(file.path(figures_path, "patient_demographics.png"),
+       p_demographics, width = 12, height = 9, dpi = 300)
+
+# Visits per patient (thesis: fig:visitsperpatient)
+p_visits <- ggplot(visits_per_patient, aes(x = n_visits)) +
+  geom_histogram(bins = 30, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  geom_vline(aes(xintercept = median(n_visits)),
+             colour = "#C85250", linetype = "dashed", linewidth = 1) +
+  annotate("text",
+           x     = median(visits_per_patient$n_visits) + 1,
+           y     = Inf, vjust = 2,
+           label = paste("Median =", median(visits_per_patient$n_visits)),
+           colour = "#C85250", size = 4) +
+  labs(title = "Distribution of Number of Visits per Patient",
+       x = "Number of visits", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+ggsave(file.path(figures_path, "visits_per_patient.png"),
+       p_visits, width = 10, height = 6, dpi = 300)
+
+# Inter-visit gap (thesis: fig:visitspacing)
+p_gaps <- ggplot(visit_gaps %>% filter(gap_days < 730), aes(x = gap_months)) +
+  geom_histogram(bins = 40, fill = "#5A8A5A", colour = "white", alpha = 0.85) +
+  geom_vline(xintercept = 6,  colour = "#C85250", linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = 12, colour = "#2E4D7B", linetype = "dashed", linewidth = 1) +
+  annotate("text", x = 6.5,  y = Inf, vjust = 2,
+           label = "6 months",  colour = "#C85250", size = 3.5) +
+  annotate("text", x = 12.5, y = Inf, vjust = 2,
+           label = "12 months", colour = "#2E4D7B", size = 3.5) +
+  labs(title    = "Distribution of Inter-Visit Gaps (months)",
+       subtitle = "Confirms irregular visit spacing",
+       x = "Gap between consecutive visits (months)", y = "Count") +
+  theme_minimal(base_size = 13)
+ggsave(file.path(figures_path, "visit_spacing.png"),
+       p_gaps, width = 10, height = 6, dpi = 300)
+
+# EDSS missingness over time (thesis: fig:edssmissingtime)
+p_edss_miss <- ggplot(edss_missing_time,
+                      aes(x = DURATION_OF_MS_AT_VISIT_ROUNDED, y = pct_missing)) +
+  geom_col(fill = "#C85250", colour = "white", alpha = 0.85) +
+  geom_hline(yintercept = 45, linetype = "dashed", colour = "#2E4D7B", linewidth = 1) +
+  annotate("text", x = 15, y = 47, label = "Overall 45% missing",
+           colour = "#2E4D7B", size = 3.5) +
+  scale_x_continuous(breaks = seq(0, 20, by = 2)) +
+  labs(title    = "EDSS Missingness by Year of Disease Duration",
+       subtitle = "If missingness increases over time, this supports MNAR",
+       x = "Years since symptom onset", y = "% of visits missing EDSS") +
+  theme_minimal(base_size = 13)
+ggsave(file.path(figures_path, "edss_missing_time.png"),
+       p_edss_miss, width = 10, height = 6, dpi = 300)
+
+# Missing data overview (thesis: fig:missingoverview)
+p_missing <- gg_miss_var(
+  analysis_vars %>% select(-PATIENT_ID), show_pct = TRUE) +
+  labs(title    = "Missing Data - Combined Key Variables",
+       subtitle = "Percentage of values missing per variable") +
+  theme_minimal(base_size = 12)
+ggsave(file.path(figures_path, "missing_overview.png"),
+       p_missing, width = 10, height = 8, dpi = 300)
+
+# EDSS trajectory (thesis: fig:edsstrajectory)
+p_edss_traj <- ggplot(edss_trajectory,
+                      aes(x = DURATION_OF_MS_AT_VISIT_ROUNDED)) +
+  geom_ribbon(aes(ymin = q25, ymax = q75), fill = "#2E4D7B", alpha = 0.2) +
+  geom_line(aes(y = median_edss), colour = "#2E4D7B", linewidth = 1.2) +
+  geom_point(aes(y = median_edss, size = n_visits), colour = "#2E4D7B") +
+  scale_size_continuous(range = c(2, 6), name = "N visits") +
+  scale_x_continuous(breaks = seq(0, 20, by = 2)) +
+  scale_y_continuous(breaks = seq(0, 10, by = 1), limits = c(0, 10)) +
+  labs(title    = "Median EDSS by Years Since Symptom Onset",
+       subtitle = "Shaded band = IQR (25th to 75th percentile)",
+       x = "Years since symptom onset", y = "EDSS") +
+  theme_minimal(base_size = 13)
+ggsave(file.path(figures_path, "edss_trajectory.png"),
+       p_edss_traj, width = 10, height = 6, dpi = 300)
+
+# Relapse plots (thesis: fig:relapseplots)
+p_rel1 <- ggplot(relapses_per_patient, aes(x = n_relapses)) +
+  geom_histogram(bins = 20, fill = "#C85250", colour = "white", alpha = 0.85) +
+  labs(title = "Relapses per Patient",
+       x = "Number of relapses", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+
+p_rel2 <- ggplot(relapses_with_time, aes(x = time_since_onset_yrs)) +
+  geom_histogram(bins = 30, fill = "#C85250", colour = "white", alpha = 0.85) +
+  labs(title = "Relapse Timing Since Symptom Onset",
+       x = "Years since onset", y = "Number of relapses") +
+  theme_minimal(base_size = 13)
+
+ggsave(file.path(figures_path, "relapse_plots.png"),
+       ggarrange(p_rel1, p_rel2, ncol = 2),
+       width = 12, height = 6, dpi = 300)
+
+# Follow-up length (thesis: fig:followuplength)
+p_followup <- ggplot(followup %>% filter(!is.na(followup_from_onset_yrs)),
+                     aes(x = followup_from_onset_yrs)) +
+  geom_histogram(bins = 30, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  geom_vline(xintercept = 2, colour = "#C85250", linetype = "dashed", linewidth = 1.2) +
+  geom_vline(xintercept = 5, colour = "#5A8A5A", linetype = "dashed", linewidth = 1.2) +
+  geom_vline(xintercept = 7, colour = "#E8A020", linetype = "dashed", linewidth = 1.2) +
+  annotate("text", x = 2.2, y = Inf, vjust = 2, label = "2 yrs",
+           colour = "#C85250", size = 3.5) +
+  annotate("text", x = 5.2, y = Inf, vjust = 2, label = "5 yrs",
+           colour = "#5A8A5A", size = 3.5) +
+  annotate("text", x = 7.2, y = Inf, vjust = 2, label = "7 yrs",
+           colour = "#E8A020", size = 3.5) +
+  labs(title    = "Distribution of Patient Follow-Up Length (from symptom onset)",
+       subtitle = "Dashed lines show proposed feature and prediction windows",
+       x = "Years from symptom onset to last visit", y = "Number of patients") +
+  theme_minimal(base_size = 13)
+ggsave(file.path(figures_path, "followup_length.png"),
+       p_followup, width = 10, height = 6, dpi = 300)
+
+
+## Feature engineering figures
+
+
+# Feature distributions grid (thesis: fig:featuredistributions)
+p_f1 <- ggplot(features_continuous %>% filter(!is.na(baseline_edss)),
+               aes(x = baseline_edss)) +
+  geom_histogram(bins = 15, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  labs(title = "Baseline EDSS", x = "EDSS", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p_f2 <- ggplot(features_continuous %>% filter(!is.na(edss_slope)),
+               aes(x = edss_slope)) +
+  geom_histogram(bins = 15, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  geom_vline(xintercept = 0, colour = "#C85250", linetype = "dashed") +
+  labs(title = "EDSS Slope", x = "EDSS units per year", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p_f3 <- ggplot(features_continuous %>% filter(!is.na(edss_sd)),
+               aes(x = edss_sd)) +
+  geom_histogram(bins = 15, fill = "#2E4D7B", colour = "white", alpha = 0.85) +
+  labs(title = "EDSS Variability (SD)", x = "SD", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p_f4 <- ggplot(features_continuous %>% filter(!is.na(age_at_onset)),
+               aes(x = age_at_onset)) +
+  geom_histogram(bins = 20, fill = "#5A8A5A", colour = "white", alpha = 0.85) +
+  labs(title = "Age at Onset", x = "Years", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p_f5 <- ggplot(features_continuous, aes(x = relapse_count)) +
+  geom_histogram(bins = 10, fill = "#C85250", colour = "white", alpha = 0.85) +
+  labs(title = "Relapse Count in Feature Window",
+       x = "Number of relapses", y = "Patients") +
+  theme_minimal(base_size = 12)
+
+p_f6 <- ggplot(features_continuous %>% filter(!is.na(MSCOURSE_grouped)),
+               aes(x = MSCOURSE_grouped, fill = MSCOURSE_grouped)) +
+  geom_bar(colour = "white", alpha = 0.85) +
+  scale_fill_manual(values = c("#2E4D7B", "#C85250")) +
+  labs(title = "MS Course", x = "", y = "Patients") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+
+ggsave(file.path(figures_path, "feature_distributions.png"),
+       ggarrange(p_f1, p_f2, p_f3, p_f4, p_f5, p_f6, ncol = 2, nrow = 3),
+       width = 12, height = 14, dpi = 300)
+
+# Slope comparison by imputation strategy (thesis: fig:imputecompare)
+p_slope_compare <- ggplot(all_slopes, aes(x = edss_slope, fill = strategy)) +
+  geom_histogram(bins = 20, colour = "white", alpha = 0.8) +
+  facet_wrap(~ strategy, ncol = 1) +
+  geom_vline(xintercept = 0, colour = "#C85250", linetype = "dashed") +
+  labs(  title = "EDSS Slope Distribution by Imputation Strategy",
+       x = "EDSS slope (units per year)", y = "Count") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+ggsave(file.path(figures_path, "slope_comparison.png"),
+       p_slope_compare, width = 8, height = 14, dpi = 300)
+
+
+## Modelling figures
+
+
+# Full AUC comparison matrix (thesis: fig:finalauc)
+p_auc_final <- ggplot(all_results_final,
+                      aes(x = model, y = pooled_auc, fill = strategy)) +
+  geom_col(position = "dodge", colour = "white", alpha = 0.85) +
+  coord_cartesian(ylim = c(0.5, 1.0)) +
+  geom_errorbar(aes(ymin = pooled_auc - sd_auc,
+                    ymax = pooled_auc + sd_auc),
+                position = position_dodge(0.9), width = 0.25) +
+  scale_fill_manual(values = c("#2E4D7B", "#C85250", "#5A8A5A",
+                               "#E8A020", "#7B4F9E")) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", colour = "grey40") +
+  labs(title    = "Full Comparison Matrix - AUC by Strategy and Model",
+       subtitle = "Error bars = SD across imputations or CV folds. Dashed = random chance.",
+       x = "", y = "AUC", fill = "Strategy") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        axis.text.x     = element_text(angle = 20, hjust = 1))
+ggsave(file.path(figures_path, "final_auc_comparison.png"),
+       p_auc_final, width = 12, height = 7, dpi = 300)
+
+# Calibration MICE RF (thesis: fig:calibmicerf)
+ggsave(file.path(figures_path, "calibration_mice_rf.png"),
+       calibration_plot(mice_out$pooled_rf, features_continuous$cdp,
+                        "Calibration - Random Forest (MICE pooled)"),
+       width = 7, height = 6, dpi = 300)
+
+# Calibration jomo RF (thesis: fig:calibjomorf)
+ggsave(file.path(figures_path, "calibration_jomo_rf.png"),
+       calibration_plot(jomo_out$pooled_rf, features_continuous$cdp,
+                        "Calibration - Random Forest (jomo pooled)"),
+       width = 7, height = 6, dpi = 300)
+ggsave(file.path(figures_path, "calibration_ordinal_rf.png"),
+       calibration_plot(results_ord$probs_rf, features_ordinal$cdp,
+                         "Calibration - Random Forest (Ordinal)"),
+       width = 6, height = 5, dpi = 300)
+
+# Calibration worst (thesis: fig:calibworst)
+ggsave(
+  filename = file.path(figures_path, "calibration_cc_gbm.png"),
+  plot     = calibration_plot(
+               probs  = results_cc$probs_gbm,
+               actual = features_cc$cdp,
+               title  = "Calibration - GBM (Complete Case) - Worst Performing"
+             ),
+  width    = 7, 
+  height   = 6, 
+  dpi      = 300
+)
+
+# RF feature importance (thesis: fig:rfimportance)
+p_rf_imp <- ggplot(importance_df,
+                   aes(x = reorder(feature, MeanDecreaseGini),
+                       y = MeanDecreaseGini)) +
+  geom_col(fill = "#2E4D7B", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Feature Importance - Ordinal Random Forest",
+       x = "", y = "Mean Decrease in Gini") +
+  theme_minimal(base_size = 12)
+ggsave(file.path(figures_path, "rf_feature_importance.png"),
+       p_rf_imp, width = 8, height = 5, dpi = 300)
+
+# GBM feature importance (thesis: fig:gbmimportance)
+p_gbm_imp <- ggplot(gbm_imp,
+                    aes(x = reorder(feature, importance), y = importance)) +
+  geom_col(fill = "#C85250", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Feature Importance - Ordinal GBM",
+       x = "", y = "Relative Influence (%)") +
+  theme_minimal(base_size = 12)
+ggsave(file.path(figures_path, "gbm_feature_importance.png"),
+       p_gbm_imp, width = 8, height = 5, dpi = 300)
+
+# MICE GBM feature importance, continuous arm (thesis: fig:gbmmiceimportance)
+p_gbm_mice_imp <- ggplot(gbm_mice_imp,
+                         aes(x = reorder(feature, importance), y = importance)) +
+  geom_col(fill = "#5A8A5A", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Feature Importance - MICE GBM (Continuous)",
+       x = "", y = "Relative Influence (%)") +
+  theme_minimal(base_size = 12)
+ggsave(file.path(figures_path, "gbm_mice_feature_importance.png"),
+       p_gbm_mice_imp, width = 9, height = 5, dpi = 300)
+
+
+## Confirm all files saved
+
+saved <- list.files(figures_path, pattern = "\\.png$")
+cat("Figures saved to Figures/ folder:\n")
+cat(paste(" -", saved), sep = "\n")
+cat("\nTotal:", length(saved), "files\n")
+```
+
+---
+
+*Generated: `r format(Sys.Date(), "%d %B %Y")` | Student 25044419 | Weeks 1–5*
